@@ -1,0 +1,13 @@
+# Generated datasets are reproducible from (code + seed); don't commit them.
+data/
+# Virtual environment
+.venv/
+venv/
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+# numba's on-disk JIT cache
+*.nbi
+*.nbc
+.DS_Store

@@ -1,0 +1,11 @@
+# Runtime
+numpy>=1.26
+scipy>=1.11
+soundfile>=0.12
+tqdm>=4.66
+# Optional: JIT-compiles the per-sample string loop (~50x faster). The synth
+# falls back to pure Python if numba is missing; output is identical either way
+# up to floating-point rounding.
+numba>=0.60
+# Tests
+pytest>=8.0
