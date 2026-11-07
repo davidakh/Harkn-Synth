@@ -1,9 +1,13 @@
 # Electro
 
-A guitar audio → tablature model, built from scratch. This repo currently
-contains **Step 1: Electro Synth v0.1**, a generator for labeled training data:
-single plucked guitar notes where we know exactly which string and fret made
-each sound.
+A guitar audio → tablature model, built from scratch. So far:
+
+1. **Electro Synth v0.1** (`synth/`): a generator for labeled training data,
+   single plucked guitar notes where we know exactly which string and fret made
+   each sound.
+2. **Features** (`features/`, `tools/`): turns the audio into CQT spectrograms
+   (the images the model will actually look at), splits the data into
+   train/val/test, and computes normalization stats.
 
 ## Setup
 
@@ -109,3 +113,43 @@ damping (darker) and longer sustain; higher frets ring shorter and darker.
 Pluck position is a comb filter (notches at harmonics with a node at the pluck
 point); pick strength controls attack brightness and level. Details are in
 the comments of `synth/electro_synth.py`.
+
+## Step 2: Features
+
+```bash
+.venv/bin/python features/extract.py --data data/notes_v1   # -> features.npy
+.venv/bin/python features/split.py   --data data/notes_v1   # -> splits/
+.venv/bin/python tools/show.py       --data data/notes_v1   # -> figures/*.png
+```
+
+On 5000 notes (Apple Silicon): extraction ~11 s, split + stats ~0.3 s,
+figures ~2 s.
+
+### What gets written (next to labels.csv)
+
+| file | contents |
+|---|---|
+| `features.npy` | float16 array **(N notes, 252 bins, 87 frames)** of CQT magnitude in dB. **Row i = labels.csv row i.** ~209 MB for 5000 notes |
+| `features_meta.json` | every CQT/dB parameter, shape, the sha256 of labels.csv (so stale features are detected), timing |
+| `splits/train.csv`, `val.csv`, `test.csv` | the labels.csv rows of each split, plus a `row` column = index into features.npy |
+| `splits/norm_stats.json` | mean/std from **train only**: overall, and per frequency bin (use the per-bin ones) |
+| `splits/split_meta.json` | seed, ratios, counts |
+| `figures/same_pitch_E4.png` | E4 played on strings 1–5: what tells strings apart |
+| `figures/open_strings.png` | one open-string note per string |
+
+### The spectrogram, in numbers
+
+- **Frequency axis**: Constant-Q transform from D2 (73.4 Hz) up 7 octaves to
+  ~9.2 kHz, 36 bins per octave = **3 bins per semitone**. Bin for a MIDI note:
+  `bin = 3 * (midi - 38)`, so low E (40) is bin 6, A4 (69) is bin 93.
+- **Time axis**: hop 512 samples = 23.2 ms per frame; a 2 s note = 87 frames.
+- **Values**: `20·log10(|CQT|)` in dB, absolute (not per-note normalized),
+  floored at −100 dB. Typical range: −90 (silence/hiss) to +20 (loud
+  fundamental). Train mean ≈ −60.6 dB, std ≈ 14.7 dB.
+
+### Splits
+
+80/10/10, stratified per (string, fret): each position's notes are split
+separately, so all 120 positions appear in every split. With 41–42 notes per
+position that rounds to 33–34 / 4 / 4, i.e. 80.8% / 9.6% / 9.6%. Fixed seed
+(`--seed`, default 42).

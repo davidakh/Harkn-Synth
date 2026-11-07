@@ -1,8 +1,9 @@
-"""Make `synth/` importable from tests (the synth modules import each other as
-siblings, the same way they do when you run the script directly)."""
+"""Make the project's script folders importable from tests (the modules import
+each other as siblings, the same way they do when you run the scripts)."""
 
 import sys
 from pathlib import Path
 
-SYNTH_DIR = Path(__file__).resolve().parent.parent / "synth"
-sys.path.insert(0, str(SYNTH_DIR))
+ROOT = Path(__file__).resolve().parent.parent
+for folder in ("synth", "features", "tools"):
+    sys.path.insert(0, str(ROOT / folder))
