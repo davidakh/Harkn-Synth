@@ -11,5 +11,7 @@ numba>=0.60
 librosa>=0.10
 # Figures (tools/show.py)
 matplotlib>=3.8
+# Step 3: training (Apple GPU via the MPS backend; has Python 3.14 wheels)
+torch>=2.9
 # Tests
 pytest>=8.0

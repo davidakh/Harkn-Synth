@@ -12,10 +12,12 @@ The author is learning ML by building it.
   idea a block implements and why it's there. Explain terms on first use.
 - Allowed dependencies (so far): numpy, scipy, soundfile, tqdm, numba (optional,
   speed only; the code must still run without it), librosa (signal processing
-  only, e.g. CQT), matplotlib (figures only), pytest for tests. librosa pulls in
+  only, e.g. CQT), matplotlib (figures only), torch (models we write and
+  train ourselves; Apple GPU via MPS), pytest for tests. librosa pulls in
   scikit-learn as a dependency; never use it for models. Ask before adding
   anything else.
-- Python 3.11+. Use the venv in `.venv/`.
+- Python 3.11+. Use the venv in `.venv/` (Homebrew Python 3.14, arm64). PyTorch
+  2.15 ships 3.14 wheels and MPS works, so no separate training venv is needed.
 
 ## Layout
 ```
@@ -26,8 +28,14 @@ Electro Synth/             # repo root (GitHub: davidakh/Electro-Synth, private)
   features/extract.py      # Step 2: WAV -> CQT dB spectrograms (features.npy)
   features/split.py        # Step 2: stratified train/val/test + train-only norm stats
   tools/show.py            # learning figures (spectrogram PNGs, note-name axes)
+  model/dataset.py         # Step 3: features -> tensors, class <-> (string, fret)
+  model/tiny_cnn.py        # Step 3: TinyCNN (4 conv blocks, time-only global pool)
+  model/train.py           # Step 3: overfit-one-batch check, then AdamW + early stopping
+  model/baseline.py        # Step 3: no-ML baseline (strongest bin + lowest fret)
+  model/evaluate.py        # Step 3: CNN vs baseline metrics, confusion PNG
   tests/                   # pytest; tests/pitch_utils.py = independent f0 estimator
   data/                    # generated datasets (gitignored, reproducible from seed)
+  runs/                    # training runs: best.pt, logs, plots, eval/ (gitignored)
 ```
 
 ## Conventions
@@ -52,12 +60,20 @@ Electro Synth/             # repo root (GitHub: davidakh/Electro-Synth, private)
   Normalization stats come from **train only** (`splits/norm_stats.json`,
   per-bin mean/std). Never fit anything on val/test.
 - Bump `FEATURES_VERSION` whenever the features for given audio change.
+- Model classes: `class = (string - 1) * 20 + fret` (see `PositionMap`).
+  Never pool the model over frequency: frequency position = pitch.
+- Evaluate only on the test split or freshly generated data, always
+  normalized with the *training* stats stored in the checkpoint. Always
+  report against the baseline; the key metric is string accuracy when the
+  pitch is right.
 
 ## Roadmap
 1. **Electro Synth v0.1** (done): labeled single plucked notes.
 2. **Features** (done): CQT spectrograms, stratified splits, norm stats, figures.
-3. Next (not started): model training on these features, then more realistic
-   data (chords, real recordings for evaluation, etc.).
+3. **TinyCNN** (done): 284k params, ~96% position accuracy on test vs 36.7%
+   for the baseline; mistakes are mostly wound strings 5 <-> 6.
+4. Next (not started): more realistic data (chords, real recordings for
+   evaluation, etc.) and stronger models.
 
 ## Commands
 ```
@@ -67,6 +83,8 @@ Electro Synth/             # repo root (GitHub: davidakh/Electro-Synth, private)
 .venv/bin/python features/extract.py --data data/notes_v1
 .venv/bin/python features/split.py --data data/notes_v1
 .venv/bin/python tools/show.py --data data/notes_v1
+.venv/bin/python model/train.py --data data/notes_v1 --run runs/tiny_cnn_v1
+.venv/bin/python model/evaluate.py --run runs/tiny_cnn_v1 --data data/notes_v1 --split test
 ```
 Git: `/usr/bin/git` is broken on this machine (xcode-select points at a
 missing Xcode Beta). Use `/Library/Developer/CommandLineTools/usr/bin/git`.

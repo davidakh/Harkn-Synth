@@ -8,6 +8,8 @@ A guitar audio → tablature model, built from scratch. So far:
 2. **Features** (`features/`, `tools/`): turns the audio into CQT spectrograms
    (the images the model will actually look at), splits the data into
    train/val/test, and computes normalization stats.
+3. **TinyCNN** (`model/`): the first trained model. Predicts string + fret
+   from a note's spectrogram, compared against a no-ML baseline.
 
 ## Setup
 
@@ -153,3 +155,55 @@ figures ~2 s.
 separately, so all 120 positions appear in every split. With 41–42 notes per
 position that rounds to 33–34 / 4 / 4, i.e. 80.8% / 9.6% / 9.6%. Fixed seed
 (`--seed`, default 42).
+
+## Step 3: TinyCNN
+
+```bash
+.venv/bin/python model/train.py    --data data/notes_v1 --run runs/tiny_cnn_v1
+.venv/bin/python model/evaluate.py --run runs/tiny_cnn_v1 --data data/notes_v1 --split test
+.venv/bin/python model/baseline.py --data data/notes_v1 --split test      # baseline only
+```
+
+To check results on completely new notes, generate a set with another seed,
+extract its features, and evaluate on all of it (no split needed):
+
+```bash
+.venv/bin/python synth/electro_synth.py --count 1000 --out data/notes_fresh1000 --seed 2026
+.venv/bin/python features/extract.py --data data/notes_fresh1000
+.venv/bin/python model/evaluate.py --run runs/tiny_cnn_v1 --data data/notes_fresh1000 --split all
+```
+
+- **Model**: 4 × (3×3 conv → batchnorm → ReLU → max-pool), average over
+  time, then linear → 120 classes (6 strings × frets 0–19). 283,944
+  parameters. Input: the first 1.0 s of the per-bin normalized CQT
+  (`--input-seconds`).
+- **Training**: cross-entropy, AdamW (lr 1e-3, weight decay 0.01), batch 64,
+  ≤30 epochs, early stopping on val loss (patience 5), seed 42. Runs on the
+  Apple GPU (MPS) in ~20 s. Before training it checks that a fresh model can
+  memorize one batch of 64 to 100%, and refuses to continue if not.
+- **Baseline**: pitch = strongest CQT bin, position = lowest fret for that
+  pitch. No learning.
+
+### Outputs (`runs/<run>/`)
+
+| file | contents |
+|---|---|
+| `best.pt` | best checkpoint (lowest val loss) + model/train config + path of the norm stats |
+| `config.json` | summary: parameters, device, sanity check, best epoch, timing |
+| `history.csv`, `learning_curves.png` | per-epoch train/val loss and accuracy |
+| `sanity_check.json` | result of the overfit-one-batch check |
+| `eval/<dataset>_<split>/report.txt` | CNN vs baseline: position, pitch, string-given-pitch accuracy, per string, per fret region, top 10 mistakes |
+| `eval/.../string_confusion.png` | 6×6 true vs predicted string (pitch-correct notes) |
+| `eval/.../metrics.json`, `predictions.csv` | the same, machine-readable; one row per note |
+
+### Results (seed 42)
+
+| | test (480) | fresh set (1000, seed 2026) |
+|---|---|---|
+| TinyCNN position accuracy | 96.2% | 95.6% |
+| baseline position accuracy | 36.7% | 36.7% |
+| pitch accuracy (both) | 100% | 100% |
+
+Every CNN mistake has the right pitch but the wrong string, mostly between the
+two lowest wound strings (5 ↔ 6). Training with seed 7 instead gives 93.5% on
+test, so expect a couple of points of variation between runs.

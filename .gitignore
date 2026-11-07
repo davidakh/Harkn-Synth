@@ -11,3 +11,6 @@ __pycache__/
 *.nbi
 *.nbc
 .DS_Store
+
+# Training runs (checkpoints, logs, plots); reproducible from code + seed
+runs/
