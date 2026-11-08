@@ -61,9 +61,11 @@ from tqdm import tqdm
 
 # When run as a script, Python puts this file's folder (synth/) on sys.path,
 # so the sibling module imports directly. Tests add synth/ to sys.path too.
+import augment
 import tuning
 
-SYNTH_VERSION = "0.1.0"
+SYNTH_VERSION = "0.3.0"  # 0.3: string stiffness + body resonance, retuned decay/brightness
+# (0.2 added optional onset jitter; 0.1 was the first release)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PREVIEW_DIR = PROJECT_ROOT / "data" / "preview"
@@ -97,31 +99,41 @@ class StringTimbre:
     """Physical character of one string, at the open position.
 
     t60_open:  seconds for the fundamental to decay by 60 dB (to 1/1000 of its
-               amplitude). Thick wound strings store more energy and ring longer.
+               amplitude).
     loop_lowpass_open:  coefficient `b` of the in-loop lowpass (0 = no high-
                frequency loss, 0.25 = maximum loss). Wound strings have more
                internal friction, so they lose highs faster -> darker, warmer.
+    inharmonicity_open:  B, the string's stiffness (see dispersion_allpass).
+
+    v0.3 values come from tools/compare_real.py on a real guitar (coarsely:
+    each one is randomized per note by a factor ~0.5-2, see PARAM_RANGES):
+      * real notes rang 3.5-6 s (T60), 2-3x longer than v0.1's synth;
+      * real plain strings kept strong harmonics for >1 s, v0.1's were near
+        sine waves after 50 ms -> much less damping on strings 1-3;
+      * fitted B_open: 3.4e-4 (s6), 1.2e-4, 0.6e-4, 1.0e-4, 0.4e-4, 0.16e-4 (s1).
     """
 
     t60_open: float
     loop_lowpass_open: float
+    inharmonicity_open: float
 
 
 STRING_TIMBRE: dict[int, StringTimbre] = {
-    6: StringTimbre(t60_open=4.0, loop_lowpass_open=0.20),  # low E, wound: darkest
-    5: StringTimbre(t60_open=3.6, loop_lowpass_open=0.18),  # A, wound
-    4: StringTimbre(t60_open=3.2, loop_lowpass_open=0.16),  # D, wound
-    3: StringTimbre(t60_open=2.8, loop_lowpass_open=0.13),  # G, wound on acoustic
-    2: StringTimbre(t60_open=2.4, loop_lowpass_open=0.09),  # B, plain
-    1: StringTimbre(t60_open=2.0, loop_lowpass_open=0.07),  # high E, plain: brightest
+    6: StringTimbre(t60_open=6.0, loop_lowpass_open=0.22, inharmonicity_open=3.0e-4),  # low E, wound
+    5: StringTimbre(t60_open=5.5, loop_lowpass_open=0.18, inharmonicity_open=1.2e-4),  # A, wound
+    4: StringTimbre(t60_open=5.0, loop_lowpass_open=0.08, inharmonicity_open=0.6e-4),  # D, wound
+    3: StringTimbre(t60_open=5.0, loop_lowpass_open=0.03, inharmonicity_open=1.0e-4),  # G (plain here)
+    2: StringTimbre(t60_open=4.5, loop_lowpass_open=0.015, inharmonicity_open=0.4e-4),  # B, plain
+    1: StringTimbre(t60_open=4.0, loop_lowpass_open=0.010, inharmonicity_open=0.2e-4),  # high E, plain
 }
 
-# Fretting shortens the vibrating length. A shorter string at the same
-# tension is stiffer relative to its length and has the player's fingertip
-# damping it, so in practice it decays faster and sounds a bit duller.
-# Every 18 frets halves T60; each fret adds a little extra high-frequency loss.
-FRET_T60_HALVING = 18.0
-FRET_LOWPASS_PER_FRET = 0.003
+# Fretting shortens the vibrating length. The fingertip damps the string a
+# little, so it decays somewhat faster and sounds slightly duller.
+# Every 30 frets would halve T60; each fret adds a little high-frequency loss.
+# Stiffness grows much faster: B ~ 1/length^2, so B doubles every 6 frets
+# (x4 at fret 12). The real recording confirmed this scaling.
+FRET_T60_HALVING = 30.0
+FRET_LOWPASS_PER_FRET = 0.001
 LOOP_LOWPASS_MAX = 0.25  # at 0.25 the loop filter has a zero at Nyquist
 
 # Ranges for the per-sample randomized parameters (uniform distributions).
@@ -132,11 +144,22 @@ PARAM_RANGES: dict[str, tuple[float, float]] = {
     # (~0.08 near the bridge = twangy, ~0.30 over the neck = round/soft)
     "pluck_position": (0.08, 0.30),
     # multiplies the string's T60 (different strings, guitars, players)
-    "decay_scale": (0.6, 1.4),
+    "decay_scale": (0.5, 2.0),
     # slight mistuning of the instrument
     "detune_cents": (-3.0, 3.0),
     # background noise RMS relative to the note's peak, in dB
     "noise_db": (-70.0, -50.0),
+    # --- v0.3 ---
+    # multiplies the in-loop damping (old vs new strings, different brands)
+    "damping_scale": (0.5, 2.0),
+    # multiplies inharmonicity B (string gauge / construction)
+    "stiffness_scale": (0.5, 2.0),
+    # guitar body: three main resonances (each guitar is different)
+    "body_air_hz": (90.0, 130.0),  # air in the sound hole ("Helmholtz") mode
+    "body_top_hz": (170.0, 260.0),  # top plate's main mode
+    "body_third_hz": (270.0, 450.0),  # next plate/air mode
+    "body_gain_db": (0.0, 12.0),  # how strongly the body colors the sound
+    "body_q": (6.0, 20.0),  # sharpness of the resonances (higher = rings longer)
 }
 
 # Mid-range values used for --preview and for the strict pitch test.
@@ -146,6 +169,13 @@ DEFAULT_PARAMS = {
     "decay_scale": 1.0,
     "detune_cents": 0.0,
     "noise_db": -60.0,
+    "damping_scale": 1.0,
+    "stiffness_scale": 1.0,
+    "body_air_hz": 105.0,
+    "body_top_hz": 210.0,
+    "body_third_hz": 350.0,
+    "body_gain_db": 6.0,
+    "body_q": 12.0,
 }
 
 # Output level: never above -1 dBFS (headroom), and softer picks are quieter
@@ -166,6 +196,13 @@ class NoteParams:
     decay_scale: float
     detune_cents: float
     noise_db: float
+    damping_scale: float = 1.0
+    stiffness_scale: float = 1.0
+    body_air_hz: float = 105.0
+    body_top_hz: float = 210.0
+    body_third_hz: float = 350.0
+    body_gain_db: float = 0.0
+    body_q: float = 12.0
 
 
 def random_params(rng: np.random.Generator, string: int, fret: int) -> NoteParams:
@@ -199,11 +236,115 @@ def allpass_coefficient(delay: float, omega: float) -> float:
     return math.sin(omega * (1.0 - delay) / 2.0) / math.sin(omega * (1.0 + delay) / 2.0)
 
 
+def allpass_phase_delay(omega: float, a: float) -> float:
+    """Phase delay (samples) of the first-order allpass (a + z^-1) / (1 + a z^-1)."""
+    return (
+        math.atan2(math.sin(omega), a + math.cos(omega))
+        - math.atan2(a * math.sin(omega), 1.0 + a * math.cos(omega))
+    ) / omega
+
+
+MAX_DISPERSION_SECTIONS = 8
+
+
+def dispersion_allpass(B: float, f0: float, sample_rate: int) -> tuple[int, float, float]:
+    """Design the string-stiffness filter. Returns (sections, coefficient, delay at f0).
+
+    Stiffness and inharmonicity: an ideal string's overtones sit at exactly
+    k * f0. A real steel string also resists bending, which matters more for
+    the short wiggles of high overtones, so they travel faster and come out
+    *sharp*: f_k = k * f0 * sqrt(1 + B k^2). B ("inharmonicity") is ~1e-5
+    for thin plain strings and ~1e-4..1e-3 for thick wound ones.
+
+    In the loop, "travel faster" = "less delay at high frequencies". A
+    first-order allpass with a negative coefficient does exactly that: lots
+    of delay at low frequencies, less at high ones, and no change in volume.
+    We chain `sections` identical ones and pick the coefficient so partial
+    k_ref lands where B says, trying 1..8 sections and keeping the one whose
+    whole curve (partials 2..k_ref) fits best. The fractional-delay allpass
+    then makes the *fundamental* exact again, so tuning is unaffected.
+    """
+    if B <= 0:
+        return 0, 0.0, 0.0
+    period = sample_rate / f0
+    w0 = 2.0 * math.pi * f0 / sample_rate
+    k_ref = max(2, min(10, int(4000.0 / f0)))
+    ks = np.arange(2, k_ref + 1)
+
+    def partial_freqs(sections, a):
+        # Where partial k actually lands: the loop delay at w must equal
+        # k periods of w, i.e. w = 2*pi*k / D(w). Solve by fixed-point iteration.
+        d0 = sections * allpass_phase_delay(w0, a)
+        out = []
+        for k in ks:
+            w = k * w0
+            for _ in range(20):
+                w = 2.0 * math.pi * k / (period - d0 + sections * allpass_phase_delay(w, a))
+            out.append(w)
+        return np.array(out)
+
+    target = ks * w0 * np.sqrt(1.0 + B * ks * ks)
+    need = period * (1.0 - 1.0 / math.sqrt(1.0 + B * k_ref * k_ref))
+    best = None
+    for sections in range(1, MAX_DISPERSION_SECTIONS + 1):
+        wk = k_ref * w0 * math.sqrt(1.0 + B * k_ref * k_ref)
+        spread = lambda a: sections * (allpass_phase_delay(w0, a) - allpass_phase_delay(wk, a))  # noqa: E731
+        lo, hi = -0.95, 0.0  # the spread grows as a -> -1
+        if spread(lo) < need:
+            continue
+        for _ in range(50):  # bisection
+            mid = 0.5 * (lo + hi)
+            if spread(mid) > need:
+                lo = mid
+            else:
+                hi = mid
+        a = 0.5 * (lo + hi)
+        delay_f0 = sections * allpass_phase_delay(w0, a)
+        if delay_f0 > period - 4.0:  # must leave room for the rest of the loop
+            continue
+        err = float(np.mean((1200 * np.log2(partial_freqs(sections, a) / target)) ** 2))
+        if best is None or err < best[0]:
+            best = (err, sections, a, delay_f0)
+    if best is None:
+        return 0, 0.0, 0.0
+    return best[1], best[2], best[3]
+
+
+def body_filter(y: np.ndarray, sample_rate: int, params: "NoteParams") -> np.ndarray:
+    """The guitar body: a few resonances that boost and prolong certain bands.
+
+    The strings themselves push very little air; the bridge drives the top
+    plate and the air inside the body, which resonate at a few frequencies
+    (roughly 100, 200 and 350 Hz on an acoustic). Each resonance is modeled
+    as a peaking filter (a standard "bell" EQ, from the Audio EQ Cookbook):
+    a boost of `gain` dB around frequency f with sharpness Q. A high-Q boost
+    also rings on after the input stops, like a real body mode.
+    """
+    modes = [
+        (params.body_air_hz, 0.7 * params.body_gain_db, params.body_q),
+        (params.body_top_hz, params.body_gain_db, params.body_q),
+        (params.body_third_hz, 0.6 * params.body_gain_db, 0.8 * params.body_q),
+    ]
+    for f, gain_db, q in modes:
+        if gain_db <= 0:
+            continue
+        A = 10.0 ** (gain_db / 40.0)
+        w = 2.0 * math.pi * f / sample_rate
+        alpha = math.sin(w) / (2.0 * q)
+        b = [1 + alpha * A, -2 * math.cos(w), 1 - alpha * A]
+        a = [1 + alpha / A, -2 * math.cos(w), 1 - alpha / A]
+        y = lfilter(b, a, y)
+    return y
+
+
 @njit(cache=True)
-def _string_loop(excitation, n_samples, delay_int, gain, lowpass_b, allpass_c):
+def _string_loop(excitation, n_samples, delay_int, gain, lowpass_b, allpass_c, disp_n, disp_a):
     """Run the Karplus-Strong feedback loop sample by sample.
 
-    y[n] = excitation[n] + allpass(lowpass(y[n - delay_int]))
+    y[n] = excitation[n] + allpass(stiffness(lowpass(y[n - delay_int])))
+
+    stiffness: `disp_n` chained first-order allpasses with coefficient
+    `disp_a` (see dispersion_allpass). disp_n = 0 means an ideal flexible string.
 
     Loop lowpass: a symmetric 3-tap FIR  gain * (b, 1 - 2b, b).
       * Symmetric taps = linear phase = exactly 1 sample of delay at *every*
@@ -219,15 +360,22 @@ def _string_loop(excitation, n_samples, delay_int, gain, lowpass_b, allpass_c):
     tap_mid = gain * (1.0 - 2.0 * lowpass_b)
     ap_x_prev = 0.0  # allpass input one sample ago
     ap_y_prev = 0.0  # allpass output one sample ago
+    dx = np.zeros(max(disp_n, 1))  # stiffness sections: previous inputs
+    dy = np.zeros(max(disp_n, 1))  # ...and previous outputs
     for n in range(n_samples):
         i = n - delay_int  # sample leaving the delay line now
         d0 = y[i] if i >= 0 else 0.0
         d1 = y[i - 1] if i - 1 >= 0 else 0.0
         d2 = y[i - 2] if i - 2 >= 0 else 0.0
-        lp = tap_side * d0 + tap_mid * d1 + tap_side * d2
+        v = tap_side * d0 + tap_mid * d1 + tap_side * d2
+        for j in range(disp_n):  # stiffness: high frequencies come around sooner
+            out = disp_a * v + dx[j] - disp_a * dy[j]
+            dx[j] = v
+            dy[j] = out
+            v = out
         # first-order allpass: out = C*in + in[n-1] - C*out[n-1]
-        ap = allpass_c * lp + ap_x_prev - allpass_c * ap_y_prev
-        ap_x_prev = lp
+        ap = allpass_c * v + ap_x_prev - allpass_c * ap_y_prev
+        ap_x_prev = v
         ap_y_prev = ap
         exc = excitation[n] if n < n_exc else 0.0
         y[n] = exc + ap
@@ -293,13 +441,17 @@ def string_physics(params: NoteParams, sample_rate: int) -> dict:
     timbre = STRING_TIMBRE[params.string]
     t60 = timbre.t60_open * 2.0 ** (-params.fret / FRET_T60_HALVING) * params.decay_scale
     lowpass_b = min(
-        LOOP_LOWPASS_MAX, timbre.loop_lowpass_open + FRET_LOWPASS_PER_FRET * params.fret
+        LOOP_LOWPASS_MAX,
+        (timbre.loop_lowpass_open + FRET_LOWPASS_PER_FRET * params.fret) * params.damping_scale,
     )
+    B = timbre.inharmonicity_open * 2.0 ** (params.fret / 6.0) * params.stiffness_scale
+    disp_n, disp_a, disp_delay = dispersion_allpass(B, actual_hz, sample_rate)
 
-    # Split the period: integer delay line + 1 sample (lowpass) + fractional
-    # allpass delay in [0.5, 1.5).
-    delay_int = int(math.floor(period - 1.5))
-    allpass_delay = period - 1.0 - delay_int
+    # Split the period: integer delay line + 1 sample (lowpass) + stiffness
+    # sections' delay at f0 + fractional allpass delay in [0.5, 1.5).
+    remaining = period - 1.0 - disp_delay
+    delay_int = int(math.floor(remaining - 0.5))
+    allpass_delay = remaining - delay_int
     allpass_c = allpass_coefficient(allpass_delay, omega)
 
     # Loop gain from the desired decay time. Each trip around the loop (one
@@ -318,6 +470,9 @@ def string_physics(params: NoteParams, sample_rate: int) -> dict:
         "t60_s": t60,
         "loop_lowpass": lowpass_b,
         "loop_gain": gain,
+        "inharmonicity_B": B,
+        "disp_sections": disp_n,
+        "disp_coef": disp_a,
         "delay_int": delay_int,
         "allpass_delay": allpass_delay,
         "allpass_coef": allpass_c,
@@ -345,12 +500,15 @@ def render_note(
         phys["loop_gain"],
         phys["loop_lowpass"],
         phys["allpass_coef"],
+        phys["disp_sections"],
+        phys["disp_coef"],
     )
 
     # DC blocker (one-pole highpass ~20 Hz, below the lowest note at 82 Hz).
     # The loop passes DC with gain ~1, so any tiny offset would linger.
     r = math.exp(-2.0 * math.pi * 20.0 / sample_rate)
     y = lfilter([1.0, -1.0], [1.0, -r], y)
+    y = body_filter(y, sample_rate, params)
     y /= np.max(np.abs(y)) + 1e-12
 
     # Background noise: real recordings always have some hiss. Without it a
@@ -401,6 +559,48 @@ def layout_rng(seed: int) -> np.random.Generator:
     return np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(1,)))
 
 
+def onset_rng(seed: int, index: int) -> np.random.Generator:
+    # A separate stream (4) so turning jitter on doesn't change any other
+    # random draw: the note itself is identical, just moved in time.
+    return np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(4, index)))
+
+
+# --- Onset jitter (v0.2) ----------------------------------------------------
+# Every synth note starts at exactly sample 0. A model trained only on that
+# can learn to depend on it: tiny_cnn_v1 drops from 96% to 40% accuracy if a
+# note starts just 2 ms later. That's a "shortcut", a cue that is perfect in
+# training and absent in real life. Notes cut from a real recording start
+# wherever the onset detector put the cut: usually a little early (a lead-in
+# of room noise), sometimes a hair late (the first few ms of the attack cut
+# off). With --onset-jitter-ms J, each note is shifted by a random amount in
+# [ONSET_EARLIEST_MS, +J] ms so the model can't rely on exact alignment.
+ONSET_EARLIEST_MS = -5.0
+
+
+def apply_onset_delay(
+    audio: np.ndarray, delay_ms: float, noise_db: float, sample_rate: int, rng: np.random.Generator
+) -> np.ndarray:
+    """Shift a note in time, keeping its length.
+
+    delay > 0: prepend a lead-in of background noise (same level as the
+               note's own noise floor); trim the same amount from the end.
+    delay < 0: cut the first |delay| ms of the attack; pad the end with noise.
+    """
+    n = len(audio)
+    shift = int(round(abs(delay_ms) * sample_rate / 1000.0))
+    if shift == 0:
+        return audio
+    peak = np.max(np.abs(audio))
+    filler = rng.normal(0.0, peak * 10.0 ** (noise_db / 20.0), shift)
+    if delay_ms > 0:
+        out = np.concatenate([filler, audio])[:n]
+    else:
+        out = np.concatenate([audio[shift:], filler])
+    n_fade = min(n, int(FADE_OUT_SECONDS * sample_rate))  # re-fade the new end
+    out[-n_fade:] *= 0.5 * (1.0 + np.cos(np.linspace(0.0, math.pi, n_fade)))
+    return out
+
+
 def plan_positions(count: int, max_fret: int, seed: int) -> list[tuple[int, int]]:
     """Choose a (string, fret) for every sample, as evenly as possible.
 
@@ -432,11 +632,21 @@ LABEL_COLUMNS = [
     "decay_scale",
     "detune_cents",
     "noise_db",
+    "damping_scale",
+    "stiffness_scale",
+    "body_air_hz",
+    "body_top_hz",
+    "body_third_hz",
+    "body_gain_db",
+    "body_q",
     # derived values (handy for analysis / debugging)
     "actual_freq_hz",
     "t60_s",
     "loop_lowpass",
     "loop_gain",
+    "inharmonicity_B",
+    "disp_sections",
+    "disp_coef",
     "delay_int",
     "allpass_coef",
     "comb_delay",
@@ -450,7 +660,7 @@ def _fmt(value) -> str:
     return str(value)
 
 
-def label_row(file: str, params: NoteParams, phys: dict) -> dict:
+def label_row(file: str, params: NoteParams, phys: dict, onset_delay_ms: float | None = None) -> dict:
     midi = tuning.string_fret_to_midi(params.string, params.fret)
     row = {
         "file": file,
@@ -463,24 +673,37 @@ def label_row(file: str, params: NoteParams, phys: dict) -> dict:
     }
     row.update({k: v for k, v in asdict(params).items() if k not in ("string", "fret")})
     row.update({k: phys[k] for k in LABEL_COLUMNS if k in phys and k not in row})
-    return {k: _fmt(row[k]) for k in LABEL_COLUMNS}
+    out = {k: _fmt(row[k]) for k in LABEL_COLUMNS}
+    if onset_delay_ms is not None:  # only datasets made with jitter get this column
+        out["onset_delay_ms"] = _fmt(onset_delay_ms)
+    return out
 
 
 def _render_job(job: tuple) -> dict:
     """Worker entry point: render + write one sample, return its label row.
     Top-level function so it can be sent to worker processes."""
-    index, string, fret, seed, sample_rate, duration, audio_dir = job
+    index, string, fret, seed, sample_rate, duration, audio_dir, onset_jitter_ms, do_augment = job
     rng = sample_rng(seed, index)
     params = random_params(rng, string, fret)
     audio, phys = render_note(params, sample_rate, duration, rng)
+    delay_ms = None
+    if onset_jitter_ms > 0:
+        jitter_rng = onset_rng(seed, index)
+        delay_ms = float(jitter_rng.uniform(ONSET_EARLIEST_MS, onset_jitter_ms))
+        audio = apply_onset_delay(audio, delay_ms, params.noise_db, sample_rate, jitter_rng)
+    aug_info = {}
+    if do_augment:  # after the jitter: the room and mic hear the note where it is
+        audio, aug_info = augment.augment_note(audio, sample_rate, augment.augment_rng(seed, index))
     name = f"{index:06d}.wav"
     write_wav(Path(audio_dir) / name, audio, sample_rate)
-    return label_row(f"audio/{name}", params, phys)
+    row = label_row(f"audio/{name}", params, phys, delay_ms)
+    row.update({k: _fmt(v) for k, v in aug_info.items()})
+    return row
 
 
 def write_labels(path: Path, rows: list[dict]) -> None:
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=LABEL_COLUMNS, lineterminator="\n")
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -495,6 +718,8 @@ def generate_dataset(
     workers: int = 1,
     progress: bool = True,
     cli_args: dict | None = None,
+    onset_jitter_ms: float = 0.0,
+    augment_chain: bool = False,
 ) -> dict:
     out_dir = Path(out_dir)
     audio_dir = out_dir / "audio"
@@ -502,7 +727,7 @@ def generate_dataset(
 
     plan = plan_positions(count, max_fret, seed)
     jobs = [
-        (i + 1, s, f, seed, sample_rate, duration, str(audio_dir))
+        (i + 1, s, f, seed, sample_rate, duration, str(audio_dir), onset_jitter_ms, augment_chain)
         for i, (s, f) in enumerate(plan)
     ]
 
@@ -538,6 +763,10 @@ def generate_dataset(
         "sample_rate": sample_rate,
         "duration_s": duration,
         "max_fret": max_fret,
+        "onset_jitter_ms": onset_jitter_ms,
+        "onset_delay_range_ms": [ONSET_EARLIEST_MS, onset_jitter_ms] if onset_jitter_ms > 0 else None,
+        "augment": augment_chain,
+        "augment_codec": ("aac (afconvert)" if augment.AFCONVERT else "mp3 (soundfile)") if augment_chain else None,
         "audio_format": "WAV, mono, PCM 16-bit",
         "string_numbering": "1 = high E (E4) ... 6 = low E (E2)",
         "open_string_midi": tuning.OPEN_STRING_MIDI,
@@ -603,6 +832,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"write open strings + frets 5/12/max to {DEFAULT_PREVIEW_DIR.relative_to(PROJECT_ROOT)}/ "
         "(or --out) for listening",
     )
+    p.add_argument(
+        "--onset-jitter-ms", type=float, default=0.0,
+        help=f"shift each note's start by a random {ONSET_EARLIEST_MS:g}..+N ms (0 = off, notes start at sample 0)",
+    )
+    p.add_argument(
+        "--augment", action="store_true",
+        help="pass every note through a random recording chain (reverb, noise, mic EQ, "
+        "compression, AAC); see synth/augment.py",
+    )
     p.add_argument("--quiet", action="store_true", help="no progress bar")
     return p
 
@@ -640,6 +878,8 @@ def main(argv: list[str] | None = None) -> int:
         workers=workers,
         progress=not args.quiet,
         cli_args=vars(args),
+        onset_jitter_ms=args.onset_jitter_ms,
+        augment_chain=args.augment,
     )
     secs = meta["generation_seconds"]
     print(

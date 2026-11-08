@@ -25,14 +25,19 @@ Electro Synth/             # repo root (GitHub: davidakh/Electro-Synth, private)
   CLAUDE.md, README.md, requirements.txt
   synth/electro_synth.py   # Step 1: dataset generator (Karplus-Strong synth + CLI)
   synth/tuning.py          # string/fret -> MIDI -> Hz, cents helpers
+  synth/augment.py         # Step 5: recording-chain augmentation (--augment)
   features/extract.py      # Step 2: WAV -> CQT dB spectrograms (features.npy)
   features/split.py        # Step 2: stratified train/val/test + train-only norm stats
   tools/show.py            # learning figures (spectrogram PNGs, note-name axes)
+  tools/record_session.py  # Step 4: real-guitar play list (+ --simulate dry-run take)
+  tools/slice_session.py   # Step 4/5: recorded take -> labeled dataset (pitch alignment, never relabels)
+  tools/compare_real.py    # Step 5: real vs synth diagnosis (spectra, decay, inharmonicity)
   model/dataset.py         # Step 3: features -> tensors, class <-> (string, fret)
   model/tiny_cnn.py        # Step 3: TinyCNN (4 conv blocks, time-only global pool)
   model/train.py           # Step 3: overfit-one-batch check, then AdamW + early stopping
   model/baseline.py        # Step 3: no-ML baseline (strongest bin + lowest fret)
   model/evaluate.py        # Step 3: CNN vs baseline metrics, confusion PNG
+  model/compare.py         # Step 4: runs side by side (tables, curves, confusions)
   tests/                   # pytest; tests/pitch_utils.py = independent f0 estimator
   data/                    # generated datasets (gitignored, reproducible from seed)
   runs/                    # training runs: best.pt, logs, plots, eval/ (gitignored)
@@ -60,6 +65,23 @@ Electro Synth/             # repo root (GitHub: davidakh/Electro-Synth, private)
   Normalization stats come from **train only** (`splits/norm_stats.json`,
   per-bin mean/std). Never fit anything on val/test.
 - Bump `FEATURES_VERSION` whenever the features for given audio change.
+- **Shortcut warning**: synth notes start at exactly sample 0; tiny_cnn_v1 learned
+  to depend on that (a 2 ms shift drops it from 96% to 40%). Synth v0.2 adds
+  `--onset-jitter-ms` (random -5..+N ms start; separate rng stream 4, so jitter
+  off = byte-identical v0.1 audio). Train anything meant for real audio with jitter.
+- Real sessions: `data/real_session*/` (playlist.csv + recorded take -> audio/,
+  labels.csv, metadata.json). Test-only: never train on them. The slicer never
+  relabels: count mismatches go to pitch alignment (extras dropped and listed,
+  missing notes left out; >10% missing aborts), pitch mismatches are flagged,
+  and it refuses to overwrite a sliced session without --overwrite.
+- **data/real_session1 is the locked real-world exam** (60 notes, phone mic, AAC).
+  Never train on it, never re-slice it in place. Synth v0.3 was tuned *coarsely*
+  against it (tools/compare_real.py): that's mild test-set leakage, so treat its
+  score as slightly optimistic; record a separate dev session for finer tuning.
+- Synth v0.3: string stiffness (dispersion allpasses; B_open per string, x2 every
+  6 frets), body resonances (3 peaking modes), longer decay, brighter plain
+  strings. `--augment` (rng stream 5): reverb, noise/hum/clicks, low/high cut,
+  shelf, 3 bells, compression, AAC via afconvert at 44.1 kHz (MP3 fallback).
 - Model classes: `class = (string - 1) * 20 + fret` (see `PositionMap`).
   Never pool the model over frequency: frequency position = pitch.
 - Evaluate only on the test split or freshly generated data, always
@@ -72,8 +94,16 @@ Electro Synth/             # repo root (GitHub: davidakh/Electro-Synth, private)
 2. **Features** (done): CQT spectrograms, stratified splits, norm stats, figures.
 3. **TinyCNN** (done): 284k params, ~96% position accuracy on test vs 36.7%
    for the baseline; mistakes are mostly wound strings 5 <-> 6.
-4. Next (not started): more realistic data (chords, real recordings for
-   evaluation, etc.) and stronger models.
+4. **Reality check + scale-up** (done except the real recording): play list
+   + slicer, notes_v2 (50k, seed 1234) -> tiny_cnn_v2, onset-jitter fix
+   (notes_v1j -> tiny_cnn_v1j). v2 99.8% aligned but 49% shifted; v1j ~86%
+   either way, 77% on the simulated take. Real-guitar numbers pending.
+5. **Sim-to-real** (done): compare_real diagnosis, synth v0.3 (stiffness, body),
+   --augment recording chain, pitch-aligned slicing. tiny_cnn_v3 (notes_v3: 50k,
+   seed 3003, jitter 60 + augment) = 63.3% position / 98.3% pitch on
+   real_session1 (v1j: 33.3% / 83.3%). Errors: mostly "one string thinner".
+6. Next: a separate real *dev* session for tuning; bigger/regularized model
+   (v3 overfits after epoch 3); fix the one-string-thinner bias.
 
 ## Commands
 ```

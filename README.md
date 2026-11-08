@@ -10,6 +10,12 @@ A guitar audio → tablature model, built from scratch. So far:
    train/val/test, and computes normalization stats.
 3. **TinyCNN** (`model/`): the first trained model. Predicts string + fret
    from a note's spectrogram, compared against a no-ML baseline.
+4. **Reality check + scale-up** (`tools/record_session.py`,
+   `tools/slice_session.py`, `model/compare.py`): a real-guitar test set
+   workflow, a 50k-note dataset, and the onset-timing shortcut fix.
+5. **Closing the sim-to-real gap** (`tools/compare_real.py`, `synth/augment.py`,
+   synth v0.3): diagnose real vs synth, model string stiffness and the
+   guitar body, randomize the recording chain, align takes by pitch.
 
 ## Setup
 
@@ -207,3 +213,150 @@ extract its features, and evaluate on all of it (no split needed):
 Every CNN mistake has the right pitch but the wrong string, mostly between the
 two lowest wound strings (5 ↔ 6). Training with seed 7 instead gives 93.5% on
 test, so expect a couple of points of variation between runs.
+
+## Step 4: Real-guitar test set
+
+### 1. Make the play list
+```bash
+.venv/bin/python tools/record_session.py --out data/real_session1
+```
+This prints a numbered checklist and tab of 60 positions: 10 per string,
+frets spread 0–19, in random order (fixed seed). The same list is saved as
+`data/real_session1/playlist.txt` and `playlist.csv`.
+
+### 2. Record
+- **Before you start:** tune to standard tuning (A440). Use a clean tone, no effects.
+- **Playing:** play the notes in list order, one at a time, about 2 s apart. Mute each note before the next one.
+- **If you fumble:** restart the take. Notes are matched to the list *by order*.
+- **Saving:** save as WAV (any sample rate, mono or stereo).
+
+### 3. Slice, extract, evaluate
+```bash
+.venv/bin/python tools/slice_session.py --session data/real_session1 --wav path/to/take.wav
+.venv/bin/python features/extract.py --data data/real_session1
+.venv/bin/python model/evaluate.py --run runs/tiny_cnn_v1j --data data/real_session1 --split all
+```
+- **Count check:** if the number of detected notes differs from the play list,
+  nothing is written. You get the onset times and `slicing.png` instead; adjust
+  `--min-gap` / `--quiet-db` or re-record.
+- **Pitch check:** every note is checked with pYIN. Notes more than half a
+  semitone from their label (after removing the guitar's overall tuning
+  offset) are **flagged** in `labels.csv` and printed, never relabeled.
+  `--drop-flagged` leaves them out.
+- **Level:** each note is scaled to a −3 dBFS peak, the middle of the synth's range.
+- **Dry run without a guitar:** `record_session.py --simulate` writes
+  `simulated_take.wav`, the synth playing the list with realistic messiness
+  (uneven spacing, overlapping notes, muting clicks, room noise, 44.1 kHz stereo).
+
+### Onset jitter (synth v0.2)
+Synth notes always start at exactly sample 0, and tiny_cnn_v1 learned to rely
+on that. Delaying a note by **2 ms** drops it from 96% to 40%. Real sliced
+notes never line up like that.
+
+`--onset-jitter-ms N` shifts every note by a random −5…+N ms. Off by default,
+and with it off the output is byte-identical to v0.1.
+
+`data/notes_v1j` is notes_v1 (same seed, same notes) with `--onset-jitter-ms 60`.
+
+## Step 4 results: v1 vs v2 vs v1j
+
+- **v1**: 5k notes.
+- **v2**: 50k notes, same synth, same settings (seed 1234).
+- **v1j**: v1's notes with onset jitter.
+
+To rebuild the tables and plots:
+
+```bash
+.venv/bin/python model/compare.py --runs runs/tiny_cnn_v1 runs/tiny_cnn_v2 runs/tiny_cnn_v1j \
+    --evals notes_v1_test notes_v2_test notes_v1j_test notes_fresh1000_all sim_session_all \
+    --confusion sim_session_all --out runs/comparison_step4
+```
+
+| position accuracy | v1 | v2 | v1j | baseline |
+|---|---|---|---|---|
+| train − val accuracy gap | 5.0 pts | −0.1 pts | 10.4 pts | |
+| synth test, aligned (notes_v1 test) | 96.2% | **99.8%** | 86.9% | 36.7% |
+| synth test, shifted (notes_v1j test) | 44.2% | 49.0% | **86.2%** | 36.7% |
+| fresh set (1000, aligned) | 95.6% | **99.9%** | 86.8% | 36.7% |
+| simulated take (60) | 40.0% | 46.7% | **76.7%** | 36.7% |
+| real guitar (60) | *record first* | | | |
+
+- **More data:** 10× more data removed the overfitting gap and made v2
+  near-perfect on aligned synth notes.
+- **The shortcut:** v2 is still as dependent on exact note timing as v1
+  (49% shifted). More of the *same* data doesn't fix a shortcut.
+- **Changing the data:** jittered starts (v1j) give a model that scores the
+  same whether notes are aligned or not, and nearly doubles v1 on the
+  simulated take.
+
+## Step 5: Closing the sim-to-real gap
+
+### Diagnose
+```bash
+.venv/bin/python tools/compare_real.py --real data/real_session1 --out runs/real_vs_synth/before
+.venv/bin/python tools/compare_real.py --augment --out runs/real_vs_synth/after_v03_aug
+```
+For each real note, this renders a synth "twin" at the same position and
+measures both the same way:
+- fundamental strength vs the strongest partial
+- harmonic profile per string (pitch-aligned)
+- decay T60
+- noise floor
+- inharmonicity B
+- average spectrum vs frequency (the body + room + mic + codec coloration)
+
+It writes `side_by_side.png`, `harmonic_profiles.png`, `coloration.png` and
+`report.md`.
+
+### Synth v0.3
+- **String stiffness:** overtones run sharp, `f_k = k·f0·√(1 + B k²)`, via
+  allpass filters in the string loop. B per open string (from the real
+  recording) runs from 3e-4 (low E) to 0.2e-4 (high E). It doubles every
+  6 frets and gets a random ×0.5–2 per note.
+- **Guitar body:** three resonances (~105 / 210 / 350 Hz, randomized).
+- **Retuned strings:** longer decay (T60 4–6 s open) and much brighter plain
+  strings, both randomized per note.
+
+### `--augment`: the recording chain
+`synth/augment.py` applies, in order:
+1. room reverb (synthetic impulse response)
+2. room noise, mains hum, handling clicks
+3. low cut, high cut, a ±12 dB shelf tilt, and three ±15 dB bell filters
+4. phone-style compression
+5. an AAC encode/decode at 32–128 kbps (via macOS `afconvert`; MP3 elsewhere)
+
+Every parameter is random per note and logged in `labels.csv` (`aug_*` columns).
+
+### Pitch-aligned slicing
+If the onset count doesn't match the play list, `slice_session.py` detects
+events more permissively, measures each one's pitch, and aligns them to the
+play list with dynamic programming:
+- **Extra events are dropped and listed:** knocks, re-plucks, and noise.
+- **Missing notes are left out and listed.**
+- **Wrong notes stay matched but flagged.**
+- **Too many missing notes (>10%):** nothing is written.
+
+It never overwrites an existing sliced session unless you pass `--overwrite`;
+use `--out` to slice into a new folder.
+
+### Step 5 results
+
+`tiny_cnn_v3` is the same model and settings as before, trained on
+`notes_v3`: 50k notes, seed 3003, synth v0.3, `--onset-jitter-ms 60 --augment`.
+
+| position accuracy | v1 | v2 | v1j | **v3** | baseline |
+|---|---|---|---|---|---|
+| **real guitar (real_session1, 60)** | 30.0% | 13.3% | 33.3% | **63.3%** | 13.3% |
+| real guitar: pitch | 81.7% | 43.3% | 83.3% | **98.3%** | 68.3% |
+| real guitar: string when pitch right (chance 37%) | 36.7% | 30.8% | 40.0% | **64.4%** | 19.5% |
+| own synth test | 96.2% | 99.7% | 86.2% | 89.2% | |
+| old v0.1 synth (notes_v1 test) | 96.2% | 99.8% | 86.9% | 39.2% | 36.7% |
+
+- **Real guitar:** v3 roughly doubles the real-guitar score and nearly solves
+  pitch. With only 60 notes, ±12 points is the 95% range, and the synth was
+  tuned coarsely on these same notes, so treat 63% as somewhat optimistic.
+- **Old synth:** v3 is near chance on v0.1 synth notes. That synth lacks
+  stiffness and has short decays, i.e. it isn't a realistic guitar any more,
+  so those sets stopped being useful benchmarks.
+- **Remaining real errors** almost all pick the next thinner string
+  (D→G, B→E, A→D).
