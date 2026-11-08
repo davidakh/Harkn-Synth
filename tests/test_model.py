@@ -125,3 +125,10 @@ def test_train_and_evaluate_end_to_end(tmp_path):
     out = run / "eval" / "ds_test"
     for name in ("report.txt", "metrics.json", "string_confusion.png", "predictions.csv"):
         assert (out / name).exists(), name
+
+    import compare
+
+    prefix = tmp_path / "cmp" / "comparison"
+    compare.main(["--runs", str(run), "--evals", "ds_test", "--confusion", "ds_test", "--out", str(prefix)])
+    for name in ("comparison.md", "comparison_curves.png", "comparison_confusion.png"):
+        assert (tmp_path / "cmp" / name).exists(), name
