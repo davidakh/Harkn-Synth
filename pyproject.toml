@@ -1,0 +1,35 @@
+# Makes Electro Synth installable, so other projects (Electro CNN) can import
+# its modules instead of copying them:
+#     pip install -e "../../Electro Synth[fast]"
+# "-e" (editable) links to this folder rather than copying it, so a change
+# here is picked up there immediately, with no reinstall.
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "electro-synth"
+dynamic = ["version"]  # read from SYNTH_VERSION below, so there's one source
+description = "Labeled guitar-note dataset generator (Karplus-Strong synth + recording-chain augmentation)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+    "tqdm>=4.66",
+    "librosa>=0.10",  # CQT in spectrogram.py (signal processing only)
+]
+
+[project.optional-dependencies]
+# numba JIT-compiles the per-sample string loop (~50x faster). The synth runs
+# without it; output is identical up to floating-point rounding.
+fast = ["numba>=0.60"]
+
+[tool.setuptools]
+# The modules live in synth/ and import each other by bare name
+# (`import tuning`), so they're installed as top-level modules.
+package-dir = { "" = "synth" }
+py-modules = ["electro_synth", "tuning", "augment", "spectrogram"]
+
+[tool.setuptools.dynamic]
+version = { attr = "electro_synth.SYNTH_VERSION" }

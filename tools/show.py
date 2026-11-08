@@ -2,7 +2,9 @@
 
     python tools/show.py --data data/notes_v1
 
-Writes two PNGs to <data>/figures/:
+Writes two PNGs to <data>/figures/. Spectrograms are computed from the WAVs
+with synth/spectrogram.py, the same CQT Electro CNN trains on, so no feature
+extraction is needed first.
 
 same_pitch_E4.png
     E4 (330 Hz) can be played in five places: string 1 open, 2 fret 5,
@@ -40,6 +42,8 @@ figure share one color scale, so brightness is comparable across panels.
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import math
 import sys
 from pathlib import Path
@@ -49,11 +53,12 @@ import matplotlib
 matplotlib.use("Agg")  # render to files; no window needed
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+import soundfile as sf  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path[:0] = [str(PROJECT_ROOT / "synth"), str(PROJECT_ROOT / "features")]
+sys.path.insert(0, str(PROJECT_ROOT / "synth"))
 import electro_synth as es  # noqa: E402
-import extract  # noqa: E402
+import spectrogram  # noqa: E402
 import tuning  # noqa: E402
 
 E4_POSITIONS = [(1, 0), (2, 5), (3, 9), (4, 14), (5, 19)]
@@ -80,7 +85,7 @@ def draw_spectrogram(ax, spec_db, meta, vmax, title, midi=None, ylabel=True):
         vmax=vmax,
         interpolation="nearest",
     )
-    ticks, names = extract.note_ticks()
+    ticks, names = spectrogram.note_ticks()
     ax.set_yticks(ticks)
     ax.set_yticklabels(names, fontsize=7)
     if ylabel:
@@ -93,7 +98,7 @@ def draw_spectrogram(ax, spec_db, meta, vmax, title, midi=None, ylabel=True):
     ax.set_xlabel("time (s)", fontsize=8)
     ax.tick_params(axis="x", labelsize=7)
     if midi is not None:
-        ax.axhline(extract.midi_to_bin(midi), color="cyan", lw=0.7, ls="--", alpha=0.7)
+        ax.axhline(spectrogram.midi_to_bin(midi), color="cyan", lw=0.7, ls="--", alpha=0.7)
     ax.set_title(title, fontsize=8)
     return im
 
@@ -103,17 +108,17 @@ def controlled_e4(sample_rate: int, duration: float) -> list[np.ndarray]:
     for string, fret in E4_POSITIONS:
         params = es.default_params(string, fret)
         audio, _ = es.render_note(params, sample_rate, duration, es.sample_rng(0, 1))
-        specs.append(extract.cqt_db(audio, sample_rate))
+        specs.append(spectrogram.cqt_db(audio, sample_rate))
     return specs
 
 
-def plot_same_pitch(features, meta, rows, out_path: Path, duration: float) -> None:
+def plot_same_pitch(spectrograms, meta, rows, out_path: Path, duration: float) -> None:
     sr = meta["sample_rate"]
     controlled = controlled_e4(sr, duration)
     dataset = []
     for string, fret in E4_POSITIONS:
         i = first_row_for(rows, string, fret)
-        dataset.append((i, None if i is None else np.asarray(features[i], dtype=np.float32)))
+        dataset.append((i, None if i is None else np.asarray(spectrograms[i], dtype=np.float32)))
     vmax = max([s.max() for s in controlled] + [d.max() for _, d in dataset if d is not None])
 
     fig = plt.figure(figsize=(16, 11))
@@ -147,14 +152,14 @@ def plot_same_pitch(features, meta, rows, out_path: Path, duration: float) -> No
     for (string, fret), spec in zip(E4_POSITIONS, controlled):
         ax.plot(spec[:, SPECTRUM_FRAMES].mean(axis=1), lw=1.2, label=f"string {string}, fret {fret}")
     for k in range(1, 9):  # harmonic k sits 12*log2(k) semitones above f0
-        b = extract.midi_to_bin(e4 + 12 * math.log2(k))
+        b = spectrogram.midi_to_bin(e4 + 12 * math.log2(k))
         ax.axvline(b, color="gray", lw=0.6, ls=":")
         ax.text(b, 1.0, f"{k}f0" if k > 1 else "f0", transform=ax.get_xaxis_transform(),
                 ha="center", va="bottom", fontsize=7, color="gray")
-    ticks, names = extract.note_ticks()
+    ticks, names = spectrogram.note_ticks()
     ax.set_xticks(ticks)
     ax.set_xticklabels(names, fontsize=7)
-    ax.set_xlim(extract.midi_to_bin(e4 - 7), extract.midi_to_bin(e4 + 12 * math.log2(12)))
+    ax.set_xlim(spectrogram.midi_to_bin(e4 - 7), spectrogram.midi_to_bin(e4 + 12 * math.log2(12)))
     ax.set_ylim(VMIN_DB, vmax + 3)
     ax.set_xlabel("pitch (note)")
     ax.set_ylabel("avg level, 0.05-0.5 s (dB)")
@@ -169,12 +174,12 @@ def plot_same_pitch(features, meta, rows, out_path: Path, duration: float) -> No
     plt.close(fig)
 
 
-def plot_open_strings(features, meta, rows, out_path: Path) -> None:
+def plot_open_strings(spectrograms, meta, rows, out_path: Path) -> None:
     picks = []
     for string in (6, 5, 4, 3, 2, 1):  # low E first, like reading the neck
         i = first_row_for(rows, string, 0)
         if i is not None:
-            picks.append((string, i, np.asarray(features[i], dtype=np.float32)))
+            picks.append((string, i, np.asarray(spectrograms[i], dtype=np.float32)))
     vmax = max(spec.max() for _, _, spec in picks)
 
     fig, axes = plt.subplots(1, len(picks), figsize=(3 * len(picks), 5.5), sharey=True)
@@ -193,21 +198,43 @@ def plot_open_strings(features, meta, rows, out_path: Path) -> None:
     plt.close(fig)
 
 
+def read_labels(data_dir: Path) -> list[dict]:
+    with open(Path(data_dir) / "labels.csv", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+class NoteSpectrograms:
+    """spectrograms[i] = CQT (dB) of the note on row i of labels.csv.
+
+    Computed from the WAV when asked for, so this script only needs the audio
+    the synth wrote. The figures pick about a dozen notes, so it's quick.
+    """
+
+    def __init__(self, data_dir: Path, rows: list[dict]):
+        self.data_dir, self.rows = Path(data_dir), rows
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        audio, sr = sf.read(str(self.data_dir / self.rows[i]["file"]), dtype="float64")
+        return spectrogram.cqt_db(audio, sr)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Plot spectrogram figures for learning.")
-    p.add_argument("--data", required=True, help="dataset folder with features.npy")
+    p.add_argument("--data", required=True, help="dataset folder (audio/ + labels.csv)")
     p.add_argument("--out", help="output folder (default: <data>/figures)")
     args = p.parse_args(argv)
 
     data_dir = Path(args.data)
-    features, meta = extract.load_features(data_dir)
-    rows = extract.read_labels(data_dir)
-    duration = meta["duration_s"]
+    rows = read_labels(data_dir)
+    synth_meta = json.loads((data_dir / "metadata.json").read_text())
+    meta = {"sample_rate": int(synth_meta["sample_rate"]), "hop_length": spectrogram.HOP_LENGTH}
+    duration = float(synth_meta["duration_s"])
+    spectrograms = NoteSpectrograms(data_dir, rows)
     out_dir = Path(args.out) if args.out else data_dir / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    plot_same_pitch(features, meta, rows, out_dir / "same_pitch_E4.png", duration)
-    plot_open_strings(features, meta, rows, out_dir / "open_strings.png")
+    plot_same_pitch(spectrograms, meta, rows, out_dir / "same_pitch_E4.png", duration)
+    plot_open_strings(spectrograms, meta, rows, out_dir / "open_strings.png")
     print(f"Wrote {out_dir / 'same_pitch_E4.png'}\nWrote {out_dir / 'open_strings.png'}")
     return 0
 

@@ -7,11 +7,10 @@ tqdm>=4.66
 # falls back to pure Python if numba is missing; output is identical either way
 # up to floating-point rounding.
 numba>=0.60
-# Step 2: CQT spectrograms (signal processing only, no models)
+# CQT spectrograms (synth/spectrogram.py) and onset/pitch detection in the
+# slicer (signal processing only, no models)
 librosa>=0.10
-# Figures (tools/show.py)
+# Figures (tools/)
 matplotlib>=3.8
-# Step 3: training (Apple GPU via the MPS backend; has Python 3.14 wheels)
-torch>=2.9
 # Tests
 pytest>=8.0

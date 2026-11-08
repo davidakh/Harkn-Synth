@@ -14,3 +14,5 @@ __pycache__/
 
 # Training runs (checkpoints, logs, plots); reproducible from code + seed
 runs/
+# pip install -e metadata
+*.egg-info/

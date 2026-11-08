@@ -45,10 +45,10 @@ import numpy as np  # noqa: E402
 import soundfile as sf  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path[:0] = [str(PROJECT_ROOT / "synth"), str(PROJECT_ROOT / "features")]
+sys.path.insert(0, str(PROJECT_ROOT / "synth"))
 import augment as aug  # noqa: E402
 import electro_synth as es  # noqa: E402
-import extract  # noqa: E402
+import spectrogram  # noqa: E402
 import tuning  # noqa: E402
 
 SR = 22050
@@ -210,10 +210,10 @@ def main(argv=None) -> int:
     for s in (6, 5, 4, 3, 2, 1):
         idx = next(i for i, m in enumerate(real_m) if m["string"] == s)
         picks.append(idx)
-    real_specs = [extract.cqt_db(real_audio[i], SR) for i in picks]
-    synth_specs = [extract.cqt_db(synth_audio[i], SR) for i in picks]
+    real_specs = [spectrogram.cqt_db(real_audio[i], SR) for i in picks]
+    synth_specs = [spectrogram.cqt_db(synth_audio[i], SR) for i in picks]
     vmax = max(x.max() for x in real_specs + synth_specs)
-    ticks, names = extract.note_ticks()
+    ticks, names = spectrogram.note_ticks()
     fig, axes = plt.subplots(2, 6, figsize=(20, 8), sharey=True)
     for col, i in enumerate(picks):
         m = real_m[i]
@@ -221,7 +221,7 @@ def main(argv=None) -> int:
             ax = axes[row, col]
             ax.imshow(spec, origin="lower", aspect="auto", cmap="magma", vmin=-90, vmax=vmax,
                       extent=[0, 2.0, -0.5, spec.shape[0] - 0.5], interpolation="nearest")
-            ax.axhline(extract.midi_to_bin(m["midi"]), color="cyan", lw=0.6, ls="--", alpha=0.7)
+            ax.axhline(spectrogram.midi_to_bin(m["midi"]), color="cyan", lw=0.6, ls="--", alpha=0.7)
             ax.set_yticks(ticks)
             ax.set_yticklabels(names, fontsize=7)
             ax.set_title(f"{label}: s{m['string']} f{m['fret']} ({tuning.midi_to_name(m['midi'])})", fontsize=9)
