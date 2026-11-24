@@ -1,6 +1,6 @@
-# Electro Synth
+# Harkn Synth
 
-The data factory for **Electro**, a guitar audio → tablature model built from
+The data factory for **Harkn**, a guitar audio → tablature model built from
 scratch. This project makes the labeled notes and the real-guitar test sets;
 the model that learns from them lives next door in
 [`../Electro Models/Electro CNN`](../Electro%20Models/Electro%20CNN), which installs this
