@@ -3,21 +3,21 @@
 The data factory for **Harkn**, a guitar audio → tablature model built from
 scratch. This project makes the labeled notes and the real-guitar test sets;
 the model that learns from them lives next door in
-[`../Electro Models/Electro CNN`](../Electro%20Models/Electro%20CNN), which installs this
+[`../Harkn Models/Harkn Orchestra`](../Harkn%20Models/Harkn%20Orchestra), which installs this
 project as a dependency.
 
-- **The synth** (`synth/electro_synth.py`): single plucked guitar notes where
+- **The synth** (`synth/harkn_synth.py`): single plucked guitar notes where
   we know exactly which string and fret made each sound. Extended
   Karplus-Strong with string stiffness and a guitar body (v0.3).
 - **Recording-chain augmentation** (`synth/augment.py`, `--augment`): room,
   noise, mic EQ, compression, AAC.
 - **The CQT** (`synth/spectrogram.py`): the one definition of what a note
-  "looks like", shared with Electro CNN so the two can't drift apart.
+  "looks like", shared with Harkn Orchestra so the two can't drift apart.
 - **Real-guitar sessions** (`tools/record_session.py`, `tools/slice_session.py`):
   a play list to record, and a slicer that turns the take into a labeled dataset.
 - **Diagnosis and figures** (`tools/compare_real.py`, `tools/show.py`).
-- **Datasets** (`data/`): everything Electro CNN trains and tests on. They stay
-  here; Electro CNN finds them through its `ELECTRO_DATA` setting.
+- **Datasets** (`data/`): everything Harkn Orchestra trains and tests on. They stay
+  here; Harkn Orchestra finds them through its `ELECTRO_DATA` setting.
 
 ## Setup
 
@@ -27,8 +27,8 @@ python3 -m venv .venv            # Python 3.11+
 ```
 
 `pyproject.toml` makes this folder installable, so another project can use it
-with `pip install -e "<path to Electro Synth>[fast]"` (`[fast]` adds numba).
-The modules are installed by name (`import electro_synth`, `import tuning`,
+with `pip install -e "<path to Harkn Synth>[fast]"` (`[fast]` adds numba).
+The modules are installed by name (`import harkn_synth`, `import tuning`,
 `import augment`, `import spectrogram`); editable means a change here is picked
 up there with no reinstall.
 
@@ -36,13 +36,13 @@ up there with no reinstall.
 
 ```bash
 # Listen first: 6 open strings + frets 5, 12, 19 on each -> data/preview/
-.venv/bin/python synth/electro_synth.py --preview
+.venv/bin/python synth/harkn_synth.py --preview
 
 # Generate a dataset
-.venv/bin/python synth/electro_synth.py --count 5000 --out data/notes_v1 --seed 42
+.venv/bin/python synth/harkn_synth.py --count 5000 --out data/notes_v1 --seed 42
 
 # The current training set: v0.3 + onset jitter + recording chain (~7 min)
-.venv/bin/python synth/electro_synth.py --count 50000 --out data/notes_v3 --seed 3003 \
+.venv/bin/python synth/harkn_synth.py --count 50000 --out data/notes_v3 --seed 3003 \
     --onset-jitter-ms 60 --augment --workers 0
 ```
 
@@ -131,7 +131,7 @@ allpass tunes the loop to within ~0.01 cents. Wound strings get more in-loop
 damping (darker) and longer sustain; higher frets ring shorter and darker.
 Pluck position is a comb filter (notches at harmonics with a node at the pluck
 point); pick strength controls attack brightness and level. Details are in
-the comments of `synth/electro_synth.py`.
+the comments of `synth/harkn_synth.py`.
 
 ## Figures
 
@@ -147,7 +147,7 @@ the comments of `synth/electro_synth.py`.
 Spectrograms are computed from the WAVs with `synth/spectrogram.py`: CQT from
 D2 (73.4 Hz) up 7 octaves, 3 bins per semitone (`bin = 3 * (midi - 38)`),
 hop 512 samples (23.2 ms), absolute dB floored at −100. It's the same picture
-Electro CNN trains on.
+Harkn Orchestra trains on.
 
 ## Real-guitar sessions
 
@@ -169,7 +169,7 @@ frets spread 0–19, in random order (fixed seed). The same list is saved as
 ```bash
 .venv/bin/python tools/slice_session.py --session data/real_session1 --wav path/to/take.wav
 ```
-Then extract features and evaluate from Electro CNN (see its README).
+Then extract features and evaluate from Harkn Orchestra (see its README).
 - **Count check:** if the number of detected notes differs from the play list,
   nothing is written. You get the onset times and `slicing.png` instead; adjust
   `--min-gap` / `--quiet-db` or re-record.
@@ -244,7 +244,7 @@ use `--out` to slice into a new folder.
 
 ## Results
 
-Training runs, scores and the model comparison are in Electro CNN's README.
+Training runs, scores and the model comparison are in Harkn Orchestra's README.
 Headline: `tiny_cnn_v3`, trained on `data/notes_v3` (50k notes, seed 3003,
 synth v0.3, `--onset-jitter-ms 60 --augment`), gets **63.3%** string + fret
 and 98.3% pitch on the real guitar (`data/real_session1`), against 33.3% /
